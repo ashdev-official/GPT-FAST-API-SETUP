@@ -1,0 +1,95 @@
+import os
+import psycopg2
+from dotenv import load_dotenv
+from docx import Document
+import tiktoken
+from sentence_transformers import SentenceTransformer
+
+# --- Load environment variables ---
+load_dotenv()
+
+# --- Connect to Supabase ---
+conn = psycopg2.connect(
+    host=os.getenv("SUPABASE_HOST"),
+    dbname=os.getenv("SUPABASE_DB"),
+    user=os.getenv("SUPABASE_USER"),
+    password=os.getenv("SUPABASE_PASSWORD"),
+    port=os.getenv("SUPABASE_PORT")
+)
+cur = conn.cursor()
+
+# --- Load HuggingFace embedding model ---
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# --- Split text into chunks ---
+def chunk_text(text, max_tokens=500):
+    enc = tiktoken.get_encoding("cl100k_base")
+    tokens = enc.encode(text)
+    for i in range(0, len(tokens), max_tokens):
+        yield enc.decode(tokens[i:i+max_tokens])
+
+# --- Create embeddings ---
+def embed_text(text):
+    return model.encode(text).tolist()
+
+# --- Check if file is already uploaded ---
+def file_already_uploaded(filepath):
+    cur.execute("SELECT 1 FROM documents WHERE filepath = %s LIMIT 1;", (filepath,))
+    return cur.fetchone() is not None
+
+# --- Insert a chunk into Supabase ---
+def insert_document(category, year, content, filepath):
+    embedding = embed_text(content)
+    cur.execute(
+        "INSERT INTO documents (category, year, content, embedding, filepath) VALUES (%s, %s, %s, %s, %s)",
+        (category, year, content, embedding, filepath)
+    )
+    conn.commit()
+
+# --- Process single .docx file ---
+def process_docx(filepath, category, year):
+    if file_already_uploaded(filepath):
+        print(f"Skipped (already uploaded): {filepath}")
+        return
+    doc = Document(filepath)
+    full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+    for chunk in chunk_text(full_text):
+        insert_document(category, year, chunk, filepath)
+    print(f"✅ Inserted: {filepath}")
+
+# --- Recursively process all files in folder ---
+def process_folder(folder_path):
+    for root, dirs, files in os.walk(folder_path):
+        for f in files:
+            if f.endswith(".docx"):
+                rel_path = os.path.relpath(root, folder_path)
+                parts = rel_path.split(os.sep)
+                category = parts[0] if len(parts) > 0 else "Unknown"
+                year = parts[1] if len(parts) > 1 else "Unknown"
+                process_docx(os.path.join(root, f), category, year)
+    print("✅ All files processed!")
+
+# --- Search Supabase ---
+def search(query, top_k=5):
+    query_embedding = embed_text(query)
+    cur.execute(
+        """
+        SELECT category, year, content, 1 - (embedding <=> %s) AS similarity
+        FROM documents
+        ORDER BY embedding <=> %s
+        LIMIT %s;
+        """,
+        (query_embedding, query_embedding, top_k)
+    )
+    return cur.fetchall()
+
+# --- Ask CustomGPT ---
+def ask(query):
+    results = search(query)
+    context = "\n".join([f"[{r[0]} - {r[1]}] {r[2]}" for r in results])
+    return f"Context:\n{context}\n\nYour question:\n{query}"
+
+# --- Main execution ---
+if __name__ == "__main__":
+    process_folder("documents")  # Scans all nested files automatically
+    print(ask("Summarize key topics discussed in PEP 2025"))
