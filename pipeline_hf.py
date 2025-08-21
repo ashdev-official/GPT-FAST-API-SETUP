@@ -4,10 +4,10 @@ from docx import Document
 import tiktoken
 from sentence_transformers import SentenceTransformer
 from supabase import create_client
+import numpy as np
 
 # --- Load environment variables ---
 load_dotenv()
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -56,7 +56,7 @@ def process_docx(filepath, category, year):
     print(f"✅ Inserted: {filepath}")
 
 # --- Recursively process all files in folder ---
-def process_folder(folder_path):
+def process_folder(folder_path="documents"):
     for root, dirs, files in os.walk(folder_path):
         for f in files:
             if f.endswith(".docx"):
@@ -70,16 +70,11 @@ def process_folder(folder_path):
 # --- Search Supabase ---
 def search(query, top_k=5):
     query_embedding = embed_text(query)
-    # Supabase currently doesn't support cosine similarity natively, so we fetch all embeddings and rank in Python
     resp = supabase.table("documents").select("*").execute()
     results = resp.data
 
-    # Calculate simple cosine similarity
-    from numpy import dot
-    from numpy.linalg import norm
-
     def similarity(a, b):
-        return dot(a, b) / (norm(a) * norm(b))
+        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
     for r in results:
         r["similarity"] = similarity(query_embedding, r["embedding"])
@@ -91,4 +86,4 @@ def search(query, top_k=5):
 def ask(query):
     results = search(query)
     context = "\n".join([f"[{r['category']} - {r['year']}] {r['content']}" for r in results])
-    return f"Context:\n{context}\n\nYour question:\n{query}"
+    return context
