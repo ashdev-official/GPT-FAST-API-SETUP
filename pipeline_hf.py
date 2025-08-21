@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 # --- Load environment variables ---
 load_dotenv()
 
-# --- Connect to Supabase ---
+# --- Connect to Supabase Postgres ---
 conn = psycopg2.connect(
     host=os.getenv("SUPABASE_HOST"),
     dbname=os.getenv("SUPABASE_DB"),
@@ -49,7 +49,7 @@ def insert_document(category, year, content, filepath):
 # --- Process single .docx file ---
 def process_docx(filepath, category, year):
     if file_already_uploaded(filepath):
-        print(f"Skipped (already uploaded): {filepath}")
+        print(f"⏩ Skipped (already uploaded): {filepath}")
         return
     doc = Document(filepath)
     full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
@@ -83,13 +83,15 @@ def search(query, top_k=5):
     )
     return cur.fetchall()
 
-# --- Ask CustomGPT ---
-def ask(query):
-    results = search(query)
-    context = "\n".join([f"[{r[0]} - {r[1]}] {r[2]}" for r in results])
-    return f"Context:\n{context}\n\nYour question:\n{query}"
+# --- Build context for FastAPI ---
+def build_context(question, category=None, year=None, top_k=5):
+    results = search(question, top_k)
+    if not results:
+        return ""
+    return "\n".join([f"[{r[0]} - {r[1]}] {r[2]}" for r in results])
 
-# --- Main execution ---
+# --- Run manually for ingestion ---
 if __name__ == "__main__":
     process_folder("documents")  # Scans all nested files automatically
-    print(ask("Summarize key topics discussed in PEP 2025"))
+    print("✅ Ingestion complete!")
+    print(build_context("Summarize key topics discussed in PEP 2025"))

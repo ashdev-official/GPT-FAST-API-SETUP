@@ -9,8 +9,8 @@ app = FastAPI(title="CustomGPT API")
 # Define request model
 class Query(BaseModel):
     question: str
-    category: str = None
-    year: str = None
+    category: str | None = None
+    year: str | None = None
     top_k: int = 5
 
 # Load lightweight HuggingFace model (FLAN-T5)
