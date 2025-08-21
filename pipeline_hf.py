@@ -1,22 +1,18 @@
 import os
-import psycopg2
 from dotenv import load_dotenv
 from docx import Document
 import tiktoken
 from sentence_transformers import SentenceTransformer
+from supabase import create_client
 
 # --- Load environment variables ---
 load_dotenv()
 
-# --- Connect to Supabase Postgres ---
-conn = psycopg2.connect(
-    host=os.getenv("SUPABASE_HOST"),
-    dbname=os.getenv("SUPABASE_DB"),
-    user=os.getenv("SUPABASE_USER"),
-    password=os.getenv("SUPABASE_PASSWORD"),
-    port=os.getenv("SUPABASE_PORT")
-)
-cur = conn.cursor()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# --- Connect to Supabase ---
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Load HuggingFace embedding model ---
 model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -34,22 +30,24 @@ def embed_text(text):
 
 # --- Check if file is already uploaded ---
 def file_already_uploaded(filepath):
-    cur.execute("SELECT 1 FROM documents WHERE filepath = %s LIMIT 1;", (filepath,))
-    return cur.fetchone() is not None
+    resp = supabase.table("documents").select("filepath").eq("filepath", filepath).limit(1).execute()
+    return bool(resp.data)
 
 # --- Insert a chunk into Supabase ---
 def insert_document(category, year, content, filepath):
     embedding = embed_text(content)
-    cur.execute(
-        "INSERT INTO documents (category, year, content, embedding, filepath) VALUES (%s, %s, %s, %s, %s)",
-        (category, year, content, embedding, filepath)
-    )
-    conn.commit()
+    supabase.table("documents").insert({
+        "category": category,
+        "year": year,
+        "content": content,
+        "embedding": embedding,
+        "filepath": filepath
+    }).execute()
 
 # --- Process single .docx file ---
 def process_docx(filepath, category, year):
     if file_already_uploaded(filepath):
-        print(f"⏩ Skipped (already uploaded): {filepath}")
+        print(f"Skipped (already uploaded): {filepath}")
         return
     doc = Document(filepath)
     full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
@@ -72,26 +70,25 @@ def process_folder(folder_path):
 # --- Search Supabase ---
 def search(query, top_k=5):
     query_embedding = embed_text(query)
-    cur.execute(
-        """
-        SELECT category, year, content, 1 - (embedding <=> %s) AS similarity
-        FROM documents
-        ORDER BY embedding <=> %s
-        LIMIT %s;
-        """,
-        (query_embedding, query_embedding, top_k)
-    )
-    return cur.fetchall()
+    # Supabase currently doesn't support cosine similarity natively, so we fetch all embeddings and rank in Python
+    resp = supabase.table("documents").select("*").execute()
+    results = resp.data
 
-# --- Build context for FastAPI ---
-def build_context(question, category=None, year=None, top_k=5):
-    results = search(question, top_k)
-    if not results:
-        return ""
-    return "\n".join([f"[{r[0]} - {r[1]}] {r[2]}" for r in results])
+    # Calculate simple cosine similarity
+    from numpy import dot
+    from numpy.linalg import norm
 
-# --- Run manually for ingestion ---
-if __name__ == "__main__":
-    process_folder("documents")  # Scans all nested files automatically
-    print("✅ Ingestion complete!")
-    print(build_context("Summarize key topics discussed in PEP 2025"))
+    def similarity(a, b):
+        return dot(a, b) / (norm(a) * norm(b))
+
+    for r in results:
+        r["similarity"] = similarity(query_embedding, r["embedding"])
+
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:top_k]
+
+# --- Ask CustomGPT ---
+def ask(query):
+    results = search(query)
+    context = "\n".join([f"[{r['category']} - {r['year']}] {r['content']}" for r in results])
+    return f"Context:\n{context}\n\nYour question:\n{query}"

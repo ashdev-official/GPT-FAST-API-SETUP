@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pipeline_hf import build_context
+from pipeline_hf import build_context, ask, process_folder, search
 from transformers import pipeline
 
 # Initialize FastAPI
@@ -9,8 +9,8 @@ app = FastAPI(title="CustomGPT API")
 # Define request model
 class Query(BaseModel):
     question: str
-    category: str | None = None
-    year: str | None = None
+    category: str = None
+    year: str = None
     top_k: int = 5
 
 # Load lightweight HuggingFace model (FLAN-T5)
@@ -19,7 +19,7 @@ qa_model = pipeline("text2text-generation", model="google/flan-t5-small")
 # API endpoint
 @app.post("/query")
 def ask_customgpt(query: Query):
-    context = build_context(query.question, query.category, query.year, query.top_k)
+    context = ask(query.question)  # Uses supabase search
     if not context:
         return {"answer": "No relevant documents found."}
 
@@ -27,3 +27,9 @@ def ask_customgpt(query: Query):
 
     answer = qa_model(prompt, max_length=512)
     return {"answer": answer[0]['generated_text']}
+
+# Optional: endpoint to pre-process documents
+@app.post("/process-docs")
+def process_docs():
+    process_folder("documents")
+    return {"status": "All documents processed!"}
